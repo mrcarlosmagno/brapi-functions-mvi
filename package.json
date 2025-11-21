@@ -1,0 +1,12 @@
+{
+  "name": "brapi-functions-mvi",
+  "version": "1.0.0",
+  "description": "Netlify Functions para Brapi Pro API",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests\" && exit 0"
+  },
+  "keywords": ["brapi", "netlify", "functions"],
+  "author": "MVI",
+  "license": "MIT"
+}
