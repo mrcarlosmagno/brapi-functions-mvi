@@ -78,7 +78,49 @@ exports.handler = async (event, context) => {
       console.log(`[BRAPI] ⚠️ Erro ao buscar preço: ${error.message}`);
     }
 
-    // 🔥 PASSO 2: Buscar dividendos no Status Invest
+    // 🔥 PASSO 2: Buscar P/VP e Liquidez no Funds Explorer
+    let pvp = null;
+    let liquidezMediaDiaria = null;
+    let valorPatrimonial = null;
+    
+    try {
+      console.log(`[FUNDS_EXPLORER] Buscando P/VP e Liquidez de ${tickerUpper}...`);
+      const fundsUrl = `https://www.fundsexplorer.com.br/funds/${tickerUpper.toLowerCase()}`;
+      const fundsResponse = await fetch(fundsUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (fundsResponse.ok) {
+        const fundsHtml = await fundsResponse.text();
+        
+        // Extrair P/VP
+        const pvpMatch = fundsHtml.match(/<p>P\/VP<\/p>\s*<p>\s*<b>\s*([0-9,\.]+)\s*<\/b>/i);
+        if (pvpMatch) {
+          pvp = parseFloat(pvpMatch[1].replace(',', '.'));
+          console.log(`[FUNDS_EXPLORER] ✅ P/VP: ${pvp}`);
+        }
+        
+        // Extrair Liquidez
+        const liqMatch = fundsHtml.match(/<p>Liquidez Média Diária<\/p>\s*<p>\s*<b>\s*([0-9,\.]+\s*[MBK]?)\s*<\/b>/i);
+        if (liqMatch) {
+          liquidezMediaDiaria = liqMatch[1].trim();
+          console.log(`[FUNDS_EXPLORER] ✅ Liquidez: ${liquidezMediaDiaria}`);
+        }
+        
+        // Extrair Valor Patrimonial
+        const vpMatch = fundsHtml.match(/<p>Valor Patrimonial<\/p>.*?R\$\s*([0-9,\.]+)/i);
+        if (vpMatch) {
+          valorPatrimonial = parseFloat(vpMatch[1].replace('.', '').replace(',', '.'));
+          console.log(`[FUNDS_EXPLORER] ✅ Valor Patrimonial: R$ ${valorPatrimonial}`);
+        }
+      }
+    } catch (error) {
+      console.log(`[FUNDS_EXPLORER] ⚠️ Erro: ${error.message}`);
+    }
+
+    // 🔥 PASSO 3: Buscar dividendos no Status Invest
     console.log(`[STATUS_INVEST] Buscando dividendos de ${tickerUpper}...`);
     const statusUrl = `https://statusinvest.com.br/fii/companytickerprovents?ticker=${tickerUpper}&chartProventsType=2`;
     
@@ -135,6 +177,9 @@ exports.handler = async (event, context) => {
       dividendos: dividendos,
       indicadores: {
         preco_atual: precoAtual,
+        pvp: pvp,
+        valor_patrimonial: valorPatrimonial,
+        liquidez_media_diaria: liquidezMediaDiaria,
         total_dividendos: dividendos.length,
         rendimento_ano_atual: statusData.earningsThisYear ? 
           parseFloat(statusData.earningsThisYear.replace(',', '.')) : null,
@@ -143,6 +188,7 @@ exports.handler = async (event, context) => {
       },
       fonte_preco: 'Brapi Pro',
       fonte_dividendos: 'Status Invest',
+      fonte_indicadores: 'Funds Explorer',
       cache: false
     };
 
