@@ -1,174 +1,185 @@
-// Netlify Function: Análise Completa de FIIs (VERSÃO SIMPLIFICADA)
-// Estratégia: Preço da Brapi + Dividendos do Status Invest
+const fetch = require('node-fetch');
 
-const BRAPI_TOKEN = process.env.BRAPI_TOKEN || 'oHdhsQdU6rz92ZQEobtwAq';
-const CACHE_DURATION = 3600; // 1 hora em segundos
-
-// Cache em memória
+// Cache simples em memória
 const cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
 exports.handler = async (event, context) => {
-  // Headers CORS
+  // Configurar headers CORS
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Content-Type': 'application/json',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Content-Type': 'application/json'
   };
 
-  // Preflight
+  // Tratar OPTIONS (preflight)
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers, body: '' };
   }
 
   try {
-    // Pegar ticker do query string ou body
-    const ticker = event.queryStringParameters?.ticker || 
-                   JSON.parse(event.body || '{}').ticker;
-
+    // Pegar ticker dos parâmetros
+    const ticker = event.queryStringParameters?.ticker?.toUpperCase();
+    
     if (!ticker) {
       return {
         statusCode: 400,
         headers,
-        body: JSON.stringify({ 
-          erro: 'Ticker não fornecido',
-          exemplo: '?ticker=XPML11'
-        })
+        body: JSON.stringify({ erro: 'Parâmetro "ticker" é obrigatório' })
+      };
+    }
+
+    console.log(`[INICIO] Buscando dados de ${ticker}...`);
+    
+    // Verificar cache
+    const cacheKey = `fii_${ticker}`;
+    const cached = cache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+      console.log(`[CACHE] Retornando dados em cache de ${ticker}`);
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ ...cached.data, cache: true })
       };
     }
 
     const tickerUpper = ticker.toUpperCase();
-
-    // Verificar cache
-    const cacheKey = `fii_simples_${tickerUpper}`;
-    const cached = cache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION * 1000) {
-      console.log(`[CACHE HIT] ${tickerUpper}`);
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          ...cached.data,
-          cache: true
-        })
-      };
-    }
-
-    console.log(`[INICIO] Buscando dados de ${tickerUpper}...`);
-
-    // 🔥 PASSO 1: Buscar preço atual na Brapi (rápido e confiável)
+    
+    // 🔥 PASSO 1: Buscar preço na Brapi
     let precoAtual = null;
-    let nomeFii = tickerUpper;
+    let nomeFii = null;
     
     try {
       console.log(`[BRAPI] Buscando preço de ${tickerUpper}...`);
-      const brapiUrl = `https://brapi.dev/api/quote/${tickerUpper}?token=${BRAPI_TOKEN}`;
-      const brapiResponse = await fetch(brapiUrl);
+      const brapiToken = process.env.BRAPI_TOKEN;
+      const brapiUrl = `https://brapi.dev/api/quote/${tickerUpper}?token=${brapiToken}`;
       
-      if (brapiResponse.ok) {
-        const brapiData = await brapiResponse.json();
-        if (brapiData.results && brapiData.results.length > 0) {
-          const fii = brapiData.results[0];
-          precoAtual = fii.regularMarketPrice;
-          nomeFii = fii.longName || fii.shortName || tickerUpper;
-          console.log(`[BRAPI] ✅ Preço: R$ ${precoAtual}`);
-        }
+      const brapiResponse = await fetch(brapiUrl);
+      const brapiData = await brapiResponse.json();
+      
+      if (brapiData.results && brapiData.results.length > 0) {
+        precoAtual = brapiData.results[0].regularMarketPrice;
+        nomeFii = brapiData.results[0].longName || brapiData.results[0].shortName;
+        console.log(`[BRAPI] ✅ Preço: R$ ${precoAtual}`);
       }
     } catch (error) {
       console.log(`[BRAPI] ⚠️ Erro ao buscar preço: ${error.message}`);
     }
 
-    // 🔥 PASSO 2: Buscar P/VP e Liquidez no Funds Explorer
+    // 🔥 PASSO 2: Buscar indicadores do Status Invest
+    console.log(`[STATUS_INVEST] Buscando indicadores de ${tickerUpper}...`);
+    const statusUrl = `https://statusinvest.com.br/fundos-imobiliarios/${tickerUpper.toLowerCase()}`;
+    
     let pvp = null;
-    let liquidezMediaDiaria = null;
     let valorPatrimonial = null;
+    let vacanciaFisica = null;
+    let patrimonioLiquido = null;
+    let liquidezMediaDiaria = null;
     
     try {
-      console.log(`[FUNDS_EXPLORER] Buscando P/VP e Liquidez de ${tickerUpper}...`);
-      const fundsUrl = `https://www.fundsexplorer.com.br/funds/${tickerUpper.toLowerCase()}`;
-      const fundsResponse = await fetch(fundsUrl, {
+      const statusResponse = await fetch(statusUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
       });
       
-      if (fundsResponse.ok) {
-        const fundsHtml = await fundsResponse.text();
-        
-        // Extrair P/VP
-        const pvpMatch = fundsHtml.match(/<p>P\/VP<\/p>\s*<p>\s*<b>\s*([0-9,\.]+)\s*<\/b>/i);
-        if (pvpMatch) {
-          pvp = parseFloat(pvpMatch[1].replace(',', '.'));
-          console.log(`[FUNDS_EXPLORER] ✅ P/VP: ${pvp}`);
-        }
-        
-        // Extrair Liquidez
-        const liqMatch = fundsHtml.match(/<p>Liquidez Média Diária<\/p>\s*<p>\s*<b>\s*([0-9,\.]+\s*[MBK]?)\s*<\/b>/i);
-        if (liqMatch) {
-          liquidezMediaDiaria = liqMatch[1].trim();
-          console.log(`[FUNDS_EXPLORER] ✅ Liquidez: ${liquidezMediaDiaria}`);
-        }
-        
-        // Extrair Valor Patrimonial
-        const vpMatch = fundsHtml.match(/<p>Valor Patrimonial<\/p>.*?R\$\s*([0-9,\.]+)/i);
-        if (vpMatch) {
-          valorPatrimonial = parseFloat(vpMatch[1].replace('.', '').replace(',', '.'));
-          console.log(`[FUNDS_EXPLORER] ✅ Valor Patrimonial: R$ ${valorPatrimonial}`);
-        }
+      const statusHtml = await statusResponse.text();
+      
+      // P/VP
+      const pvpMatch = statusHtml.match(/>P\/VP<[\s\S]*?<strong[^>]*>([0-9,\.]+)<\/strong>/i);
+      if (pvpMatch) {
+        pvp = parseFloat(pvpMatch[1].replace(',', '.'));
+        console.log(`[STATUS_INVEST] ✅ P/VP: ${pvp}`);
       }
+      
+      // Valor Patrimonial
+      const vpMatch = statusHtml.match(/Val\.?\s*patrimonial\s*p\/cota[\s\S]*?<strong class="value">([0-9,\.]+)<\/strong>/i);
+      if (vpMatch) {
+        valorPatrimonial = parseFloat(vpMatch[1].replace('.', '').replace(',', '.'));
+        console.log(`[STATUS_INVEST] ✅ Valor Patrimonial: R$ ${valorPatrimonial}`);
+      }
+      
+      // Vacância Física
+      const vacanciaMatch = statusHtml.match(/<span class="sub-value">Vacância<\/span>[\s\S]*?<strong class="value">([0-9,\.]+).*?%<\/strong>/i);
+      if (vacanciaMatch && vacanciaMatch[1] !== '-') {
+        vacanciaFisica = parseFloat(vacanciaMatch[1].replace(',', '.'));
+        console.log(`[STATUS_INVEST] ✅ Vacância Física: ${vacanciaFisica}%`);
+      }
+      
+      // Patrimônio Líquido
+      const patrimonioMatch = statusHtml.match(/>PATRIMÔNIO<[\s\S]*?R\$\s*([0-9,\.]+)/i);
+      if (patrimonioMatch) {
+        patrimonioLiquido = patrimonioMatch[1];
+        console.log(`[STATUS_INVEST] ✅ Patrimônio Líquido: R$ ${patrimonioLiquido}`);
+      }
+      
+      // Liquidez Média Diária
+      const liquidezMatch = statusHtml.match(/Liquidez\s*média\s*diária[\s\S]*?<strong class="value">([0-9,\.]+)<\/strong>/i);
+      if (liquidezMatch) {
+        const valor = parseFloat(liquidezMatch[1].replace(/\./g, '').replace(',', '.'));
+        if (valor >= 1000000) {
+          liquidezMediaDiaria = `${(valor / 1000000).toFixed(1)} M`;
+        } else if (valor >= 1000) {
+          liquidezMediaDiaria = `${(valor / 1000).toFixed(1)} K`;
+        } else {
+          liquidezMediaDiaria = valor.toFixed(2);
+        }
+        console.log(`[STATUS_INVEST] ✅ Liquidez Média Diária: R$ ${liquidezMediaDiaria}`);
+      }
+      
     } catch (error) {
-      console.log(`[FUNDS_EXPLORER] ⚠️ Erro: ${error.message}`);
+      console.log(`[STATUS_INVEST] ⚠️ Erro ao buscar indicadores: ${error.message}`);
     }
 
     // 🔥 PASSO 3: Buscar dividendos no Status Invest
     console.log(`[STATUS_INVEST] Buscando dividendos de ${tickerUpper}...`);
-    const statusUrl = `https://statusinvest.com.br/fii/companytickerprovents?ticker=${tickerUpper}&chartProventsType=2`;
+    const dividendosUrl = `https://statusinvest.com.br/fii/companytickerprovents?ticker=${tickerUpper}&chartProventsType=2`;
     
-    const statusResponse = await fetch(statusUrl, {
+    const dividendosResponse = await fetch(dividendosUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
-
-    if (!statusResponse.ok) {
-      throw new Error(`Status Invest retornou erro ${statusResponse.status}`);
-    }
-
-    const statusData = await statusResponse.json();
-
+    
+    const statusData = await dividendosResponse.json();
+    
     if (!statusData.assetEarningsModels || statusData.assetEarningsModels.length === 0) {
       return {
         statusCode: 404,
         headers,
-        body: JSON.stringify({
-          erro: 'FII não encontrado ou sem histórico de dividendos',
+        body: JSON.stringify({ 
+          erro: `Nenhum dividendo encontrado para ${ticker}`,
           ticker: tickerUpper
         })
       };
     }
 
-    // 🔥 PASSO 3: Processar dividendos
+    console.log(`[STATUS_INVEST] ✅ ${statusData.assetEarningsModels.length} dividendos encontrados`);
+
+    // Processar dividendos
     const dividendos = statusData.assetEarningsModels.map(div => ({
-      data_com: div.ed,
-      data_pagamento: div.pd,
-      valor: div.v,
-      tipo: div.et
+      data_com: div.ed ? new Date(div.ed).toLocaleDateString('pt-BR') : null,
+      data_pagamento: div.pd ? new Date(div.pd).toLocaleDateString('pt-BR') : null,
+      valor: div.v || 0,
+      tipo: 'Rendimento'
     }));
 
-    // Ordenar por data (mais recente primeiro)
-    dividendos.sort((a, b) => {
-      const dateA = parseDataBR(a.data_com);
-      const dateB = parseDataBR(b.data_com);
-      return dateB - dateA;
+    // Calcular Dividend Yield 12M
+    const hoje = new Date();
+    const umAnoAtras = new Date(hoje.getFullYear() - 1, hoje.getMonth(), hoje.getDate());
+    
+    const dividendos12m = dividendos.filter(div => {
+      if (!div.data_com) return false;
+      const [dia, mes, ano] = div.data_com.split('/');
+      const data = new Date(ano, mes - 1, dia);
+      return data >= umAnoAtras && data <= hoje;
     });
 
-    console.log(`[STATUS_INVEST] ✅ ${dividendos.length} dividendos encontrados`);
+    const totalDividendos12m = dividendos12m.reduce((sum, div) => sum + div.valor, 0);
+    const dividendYield12m = precoAtual ? ((totalDividendos12m / precoAtual) * 100).toFixed(2) : null;
 
-    // 🔥 PASSO 4: Calcular Dividend Yield 12M
-    const dividendYield12m = calcularDY12M(dividendos, precoAtual);
-
-    // 🔥 PASSO 5: Montar resposta final
+    // Montar resposta
     const resultado = {
       ticker: tickerUpper,
       nome: nomeFii,
@@ -179,6 +190,8 @@ exports.handler = async (event, context) => {
         preco_atual: precoAtual,
         pvp: pvp,
         valor_patrimonial: valorPatrimonial,
+        vacancia_fisica: vacanciaFisica,
+        patrimonio_liquido: patrimonioLiquido,
         liquidez_media_diaria: liquidezMediaDiaria,
         total_dividendos: dividendos.length,
         rendimento_ano_atual: statusData.earningsThisYear ? 
@@ -188,14 +201,14 @@ exports.handler = async (event, context) => {
       },
       fonte_preco: 'Brapi Pro',
       fonte_dividendos: 'Status Invest',
-      fonte_indicadores: 'Funds Explorer',
+      fonte_indicadores: 'Status Invest',
       cache: false
     };
 
     // Salvar no cache
     cache.set(cacheKey, {
-      timestamp: Date.now(),
-      data: resultado
+      data: resultado,
+      timestamp: Date.now()
     });
 
     console.log(`[SUCESSO] Dados completos de ${tickerUpper} retornados!`);
@@ -207,40 +220,14 @@ exports.handler = async (event, context) => {
     };
 
   } catch (error) {
-    console.error('[ERRO]', error);
+    console.error(`[ERRO] ${error.message}`);
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({
+      body: JSON.stringify({ 
         erro: 'Erro ao buscar dados do FII',
-        detalhes: error.message,
-        ticker: event.queryStringParameters?.ticker
+        detalhes: error.message 
       })
     };
   }
 };
-
-// ========================================
-// FUNÇÕES AUXILIARES
-// ========================================
-
-function calcularDY12M(dividendos, preco) {
-  if (!preco || !dividendos || dividendos.length === 0) return null;
-
-  const hoje = new Date();
-  const umAnoAtras = new Date(hoje.getFullYear() - 1, hoje.getMonth(), hoje.getDate());
-
-  const dividendos12m = dividendos.filter(div => {
-    const dataCom = parseDataBR(div.data_com);
-    return dataCom >= umAnoAtras && dataCom <= hoje;
-  });
-
-  const totalDividendos = dividendos12m.reduce((sum, div) => sum + div.valor, 0);
-  return ((totalDividendos / preco) * 100).toFixed(2);
-}
-
-function parseDataBR(dataStr) {
-  // Converte "17/11/2025" para Date
-  const [dia, mes, ano] = dataStr.split('/');
-  return new Date(ano, mes - 1, dia);
-}
