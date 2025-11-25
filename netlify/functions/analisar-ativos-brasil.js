@@ -232,7 +232,66 @@ async function buscarDadosAcao(ticker) {
 
   const acao = brapiData.results[0];
   
-  console.log(`[BRAPI] ✅ Dados completos de ${ticker}`);
+  console.log(`[BRAPI] ✅ Dados básicos de ${ticker}`);
+
+  // Buscar indicadores fundamentalistas do Status Invest
+  const statusUrl = `https://statusinvest.com.br/acoes/${ticker.toLowerCase()}`;
+  
+  let pvp = null;
+  let roe = null;
+  let roic = null;
+  let margemLiquida = null;
+  let dividaLiquidaEbitda = null;
+  let dividaLiquidaPL = null;
+  
+  try {
+    const statusResponse = await fetch(statusUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    const statusHtml = await statusResponse.text();
+    
+    // P/VP
+    const pvpMatch = statusHtml.match(/>P\/VP<[\s\S]*?<strong[^>]*>([0-9,\.]+)<\/strong>/i);
+    if (pvpMatch) {
+      pvp = parseFloat(pvpMatch[1].replace(',', '.'));
+    }
+    
+    // ROE
+    const roeMatch = statusHtml.match(/>ROE<[\s\S]*?<strong[^>]*>([0-9,\.]+)%<\/strong>/i);
+    if (roeMatch) {
+      roe = parseFloat(roeMatch[1].replace(',', '.'));
+    }
+    
+    // ROIC
+    const roicMatch = statusHtml.match(/>ROIC<[\s\S]*?<strong[^>]*>([0-9,\.]+)%<\/strong>/i);
+    if (roicMatch) {
+      roic = parseFloat(roicMatch[1].replace(',', '.'));
+    }
+    
+    // Margem Líquida
+    const margemMatch = statusHtml.match(/Margem Líquida[\s\S]*?<strong[^>]*>([0-9,\.]+)%<\/strong>/i);
+    if (margemMatch) {
+      margemLiquida = parseFloat(margemMatch[1].replace(',', '.'));
+    }
+    
+    // Dívida Líquida/EBITDA
+    const divEbitdaMatch = statusHtml.match(/Dív\. líquida\/EBITDA[\s\S]*?<strong[^>]*>([0-9,\.]+)<\/strong>/i);
+    if (divEbitdaMatch) {
+      dividaLiquidaEbitda = parseFloat(divEbitdaMatch[1].replace(',', '.'));
+    }
+    
+    // Dívida Líquida/PL
+    const divPLMatch = statusHtml.match(/Dív\. líquida\/PL[\s\S]*?<strong[^>]*>([0-9,\.]+)<\/strong>/i);
+    if (divPLMatch) {
+      dividaLiquidaPL = parseFloat(divPLMatch[1].replace(',', '.'));
+    }
+    
+    console.log(`[STATUS_INVEST] ✅ Indicadores fundamentalistas capturados`);
+    
+  } catch (error) {
+    console.log(`[STATUS_INVEST] ⚠️ Erro: ${error.message}`);
+  }
 
   return {
     tipo: 'ACAO',
@@ -246,19 +305,19 @@ async function buscarDadosAcao(ticker) {
       preco_maximo_52sem: acao.fiftyTwoWeekHigh,
       volume: acao.regularMarketVolume,
       market_cap: acao.marketCap,
-      // Fundamentos
+      // Fundamentos (Brapi + Status Invest)
       p_l: acao.priceEarnings,
-      p_vp: acao.priceToBook,
+      p_vp: pvp || acao.priceToBook,
       dividend_yield: acao.dividendYield,
-      roe: acao.returnOnEquity,
-      roic: acao.returnOnInvestedCapital,
-      margem_liquida: acao.profitMargin,
-      divida_liquida_ebitda: acao.debtToEbitda,
-      divida_liquida_patrimonio: acao.debtToEquity,
+      roe: roe || acao.returnOnEquity,
+      roic: roic || acao.returnOnInvestedCapital,
+      margem_liquida: margemLiquida || acao.profitMargin,
+      divida_liquida_ebitda: dividaLiquidaEbitda || acao.debtToEbitda,
+      divida_liquida_pl: dividaLiquidaPL || acao.debtToEquity,
       crescimento_receita_5anos: acao.revenueGrowth
     },
     dividendos: acao.dividendsData?.cashDividends || [],
-    fonte: 'Brapi',
+    fonte: 'Brapi + Status Invest',
     cache: false
   };
 }
